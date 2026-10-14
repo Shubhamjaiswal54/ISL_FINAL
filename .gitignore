@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+/venv
+.env
+
+data/
+models/
+
+# Logs
+*.log
+
+# Runtime artifacts
+*.tflite
+*.h5
+*.keras
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

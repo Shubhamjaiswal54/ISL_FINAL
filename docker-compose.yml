@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # ML Microservice - FastAPI + TensorFlow
+  ml-service:
+    build: ./ml_service
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      - ./ml_service:/app
+
+  # Backend API Gateway - Node.js + Express
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    depends_on:
+      - ml-service
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - ML_SERVICE_WS_URL=ws://ml-service:8000/ws/predict
+    volumes:
+      - ./backend:/app
+
+  # Frontend React Client
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      - VITE_BACKEND_URL=http://localhost:5000
+    volumes:
+      - ./frontend:/app

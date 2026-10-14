@@ -1,0 +1,13 @@
+/* index.css - VoxSign Frontend */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom properties */
+:root {
+  --background: #0a0a0f;
+  --foreground: #eaeaea;
+  --muted: #6b6b80;
+  --accent: #00d4aa;
+  --card: #16161f;
+}
