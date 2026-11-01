@@ -1,7 +1,9 @@
 import { useTranslationStore } from '../context/TranslationContext.jsx'
+import { useSpeech } from '../hooks/useSpeech'
 
 export default function Controls() {
   const { isListening, setIsListening, sentence } = useTranslationStore()
+  const { speak } = useSpeech()
 
   return (
     <div className="bg-card p-6 rounded-xl border border-muted/30">
@@ -14,10 +16,9 @@ export default function Controls() {
         </button>
 
         <button
-          onClick={() => navigator.mediaDevices.getUserMedia({ audio: true })
-            .then(() => window.speechSynthesis.speak(new SpeechSynthesisUtterance(sentence)))}
-          className="px-6 py-3 rounded-lg font-medium transition-colors bg-secondary text-white"
-          disabled={!isListening}
+          onClick={() => speak(sentence)}
+          className="px-6 py-3 rounded-lg font-medium transition-colors bg-secondary text-white disabled:opacity-50"
+          disabled={!sentence}
         >
           Speak
         </button>

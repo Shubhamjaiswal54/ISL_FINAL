@@ -1,10 +1,16 @@
 # Dependencies
 node_modules/
 /venv
+.venv/
 .env
 
-data/
-models/
+# Python
+__pycache__/
+*.pyc
+
+# ML artifacts (anchored, so backend/src/models/ - the Mongoose schemas - stays tracked)
+ml_service/data/
+ml_service/models/
 
 # Logs
 *.log

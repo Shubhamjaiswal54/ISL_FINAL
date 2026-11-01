@@ -1,11 +1,13 @@
 # requirements.txt - VoxSign ML Service
-numpy>=1.24.0
-pandas>=2.1.0
-opencv-python>=4.8.0
-mediapipe>=0.10.0
-tensorflow>=2.15.0
+# TensorFlow currently supports Python 3.10-3.13; use one of those for this venv.
+numpy>=1.26.0
+pillow>=10.0.0
+opencv-python>=4.9.0
+mediapipe>=0.10.14
+tensorflow>=2.16.0
 scikit-learn>=1.3.0
-google-generativeai>=0.3.0
-fastapi>=0.104.0
+google-genai>=1.0.0
+fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.7.0
+python-dotenv>=1.0.0

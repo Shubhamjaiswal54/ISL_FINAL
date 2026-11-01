@@ -1,5 +1,4 @@
 import Navbar from './components/Navbar.jsx'
-import CameraFeed from './components/CameraFeed.jsx'
 import PredictionDisplay from './components/PredictionDisplay.jsx'
 import HistoryLog from './components/HistoryLog.jsx'
 import Controls from './components/Controls.jsx'

@@ -1,49 +1,117 @@
 import { useEffect, useRef, useState } from 'react'
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision'
 
-export const useMediaPipe = () => {
-  const [landmarks, setLandmarks] = useState(null)
-  const [handLabel, setHandLabel] = useState('Right')
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17],
+]
+const HAND_COLORS = ['#00a000', '#0050c8']
+
+const drawHands = (canvas, video, hands) => {
+  if (!canvas) return
+  if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+  }
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  const ordered = [...hands].sort((a, b) => a[0][0] - b[0][0])
+  ordered.forEach((hand, handIdx) => {
+    ctx.strokeStyle = HAND_COLORS[handIdx % HAND_COLORS.length]
+    ctx.lineWidth = 3
+    HAND_CONNECTIONS.forEach(([a, b]) => {
+      ctx.beginPath()
+      ctx.moveTo(hand[a][0], hand[a][1])
+      ctx.lineTo(hand[b][0], hand[b][1])
+      ctx.stroke()
+    })
+    ctx.fillStyle = '#ff0000'
+    hand.forEach(([x, y]) => {
+      ctx.beginPath()
+      ctx.arc(x, y, 3, 0, 2 * Math.PI)
+      ctx.fill()
+    })
+  })
+}
+
+// Calls onDetection(hands) once per processed video frame. hands is a list of
+// 0-2 hands, each 21 [x, y, z] points in video pixels (z shares x's scale) -
+// the same units the training script stores, so the ML service can render
+// them with the training renderer unchanged.
+export const useMediaPipe = (onDetection, enabled = true) => {
   const [isRunning, setIsRunning] = useState(false)
+  const [handCount, setHandCount] = useState(0)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const onDetectionRef = useRef(onDetection)
+  onDetectionRef.current = onDetection
 
   useEffect(() => {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (!enabled) return undefined
+    if (!navigator.mediaDevices?.getUserMedia) {
       console.warn('MediaDevices not supported')
-      return
+      return undefined
     }
 
     let stream
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-      .then(nextStream => {
+    let cancelled = false
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+      .then((nextStream) => {
         stream = nextStream
-          if (!videoRef.current) {
-            console.error('[Frontend -> Camera] Video element is not mounted')
-            return
-          }
-          videoRef.current.srcObject = stream
-          videoRef.current.onloadedmetadata = () => {
-            console.log('[Frontend -> Camera] Video metadata loaded:', {
-              width: videoRef.current.videoWidth,
-              height: videoRef.current.videoHeight,
-              readyState: videoRef.current.readyState,
-            })
-            videoRef.current.play().catch(error => console.error('[Frontend -> Camera] Video play failed:', error.message))
-          }
+        if (cancelled || !videoRef.current) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
+        videoRef.current.srcObject = stream
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play().catch((error) => console.error('Video play failed:', error.message))
+        }
         setIsRunning(true)
-        console.log('[Frontend -> Camera] Webcam stream attached')
       })
-      .catch(err => console.error('Webcam access error:', err))
+      .catch((error) => console.error('Webcam access error:', error))
 
-    return () => stream?.getTracks().forEach(track => track.stop())
-  }, [])
+    return () => {
+      cancelled = true
+      stream?.getTracks().forEach((track) => track.stop())
+      setIsRunning(false)
+    }
+  }, [enabled])
 
   useEffect(() => {
+    if (!enabled) return undefined
     let detector
     let cancelled = false
     let animationId
-    let detectionCount = 0
+    let lastVideoTime = -1
+    let lastHandCount = 0
+
+    const detectFrame = () => {
+      const video = videoRef.current
+      if (detector && video?.readyState >= 2 && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime
+        const output = detector.detectForVideo(video, performance.now())
+        const width = video.videoWidth
+        const height = video.videoHeight
+        const hands = (output.landmarks || []).map((hand) =>
+          hand.map((lm) => [lm.x * width, lm.y * height, lm.z * width])
+        )
+        drawHands(canvasRef.current, video, hands)
+        if (hands.length !== lastHandCount) {
+          lastHandCount = hands.length
+          setHandCount(hands.length)
+        }
+        // The preview is CSS-mirrored. Phone front-camera photos are mirrored
+        // the same way, so the landmarks sent to the model are mirrored to
+        // match them. The overlay stays in raw video coordinates.
+        const mirrored = hands.map((hand) => hand.map(([x, y, z]) => [width - x, y, z]))
+        onDetectionRef.current?.(mirrored)
+      }
+      if (!cancelled) animationId = requestAnimationFrame(detectFrame)
+    }
 
     const initializeDetector = async () => {
       const vision = await FilesetResolver.forVisionTasks(
@@ -54,58 +122,29 @@ export const useMediaPipe = () => {
           modelAssetPath: import.meta.env.VITE_HAND_LANDMARKER_MODEL_URL ||
             'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
         },
-        numHands: 1,
+        numHands: 2,
         runningMode: 'VIDEO',
-        // Defaults (0.5) let stale/low-confidence tracked detections through
-        // when the hand leaves frame or is mid-motion, which the classifier
-        // then confidently (mis)labels as some letter. Raise the bar instead
-        // of trusting a shaky detection.
-        minHandDetectionConfidence: 0.7,
-        minHandPresenceConfidence: 0.7,
-        minTrackingConfidence: 0.7,
+        // Same threshold as scripts/process_original_images.py, so a hand the
+        // training photos kept is not dropped live.
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
       })
-      console.log('[Frontend -> MediaPipe] HandLandmarker initialized')
       if (cancelled) {
-        detector.unload()
+        detector.close()
         return
-      }
-
-      const detectFrame = () => {
-        const video = videoRef.current
-        if (!cancelled && detector && video?.readyState >= 2 && video.currentTime > 0) {
-          detectionCount += 1
-          const output = detector.detectForVideo(video, performance.now())
-          const nextLandmarks = output.landmarks?.[0] || null
-          const nextHandLabel = output.handedness?.[0]?.[0]?.categoryName || 'Right'
-          if (nextLandmarks) {
-            console.log('[MediaPipe -> Frontend] Landmarks detected:', {
-              count: nextLandmarks.length,
-              hand: nextHandLabel,
-              sample: nextLandmarks[0],
-            })
-          } else if (detectionCount === 1 || detectionCount % 60 === 0) {
-            console.warn('[MediaPipe -> Frontend] Video frame received, but no hand detected:', {
-              detectionCount,
-              currentTime: video.currentTime,
-              readyState: video.readyState,
-            })
-          }
-          setHandLabel(nextHandLabel)
-          setLandmarks(nextLandmarks)
-        }
-        if (!cancelled) animationId = requestAnimationFrame(detectFrame)
       }
       detectFrame()
     }
 
-    initializeDetector().catch(error => console.error('MediaPipe initialization error:', error))
+    initializeDetector().catch((error) => console.error('MediaPipe initialization error:', error))
 
     return () => {
       cancelled = true
       cancelAnimationFrame(animationId)
-      detector?.unload()
+      detector?.close()
     }
-  }, [])
+  }, [enabled])
 
-  return { startCamera: videoRef, stopCamera: canvasRef, landmarks, handLabel, isRunning }
+  return { videoRef, canvasRef, isRunning, handCount }
 }
