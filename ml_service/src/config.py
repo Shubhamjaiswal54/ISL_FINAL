@@ -1,42 +1,40 @@
 # config.py - VoxSign ML Service Configuration
-# Threshold constants, smoothing window, API keys
+import os
+from pathlib import Path
 
-# Model configuration
-# The model classifies a single frame (static hand pose) - there is no
-# temporal input window. SMOOTHING_FRAMES only controls how many recent
-# per-frame prediction probabilities get averaged before argmax, to reduce
-# flicker between visually similar letters; it is independent of the model.
-SMOOTHING_FRAMES = 5  # ~0.15-0.2s at 30fps
-NUM_LANDMARKS = 21  # 21 hand landmarks
-NUM_AXES = 3  # X, Y, Z coordinates
-NUM_HANDS = 2  # left + right, zero-filled when a hand is absent
-FEATURES = NUM_LANDMARKS * NUM_AXES * NUM_HANDS  # 126 features per frame
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / '.env')
+except ImportError:
+    pass
 
-# State machine parameters
-# Wall-clock seconds, not frame counts - the frontend detects on an uncapped
-# requestAnimationFrame loop, so "frames" arrive at whatever rate the
-# viewer's display refreshes; a frame-count threshold would mean a
-# different amount of real time for every viewer.
-CONFIDENCE_THRESHOLD = 0.85  # Minimum confidence to accept prediction
-DEBOUNCE_SECONDS = 0.35  # How long a prediction must hold before it's accepted
-IDLE_SECONDS = 30.0  # How long IDLE must hold before the sentence is flushed
-LOW_CONFIDENCE_SECONDS = 0.2  # How long confidence must dip to allow re-signing the same letter
-GAP_RESET_SECONDS = 0.5  # No frames for this long (hand left frame) resets debounce state,
-                          # so re-signing the same letter after a real pause isn't silently dropped
+BASE_DIR = Path(__file__).resolve().parents[1]
 
-# Motion gate parameters
-# The model was trained on held static poses, so a frame captured mid-transition
-# between two letters is outside its training distribution and can produce a
-# confident wrong prediction. Rather than accept that noise, we track landmark
-# velocity and force confidence to 0 (routing through the existing low-confidence
-# path above) while the hand is still moving.
-MOTION_VELOCITY_THRESHOLD = 0.06  # Unit-scale-normalized landmark distance per frame
-MOTION_EMA_ALPHA = 0.5  # Smoothing factor for the velocity estimate
+# Model artifacts written by scripts/train_skeleton_cnn.py (relative paths
+# resolve against ml_service/, not the working directory).
+MODEL_PATH = BASE_DIR / os.getenv('MODEL_PATH', 'models/isl_skeleton_cnn.tflite')
+LABELS_PATH = BASE_DIR / os.getenv('LABELS_PATH', 'models/isl_skeleton_labels.json')
 
-# MediaPipe / Vision settings
-MAX_NUM_HANDS = 2
-MIN_DETECTION_CONFIDENCE = 0.5
-MIN_TRACKING_CONFIDENCE = 0.5
+# ISL fingerspelling uses one or two hands depending on the letter.
+MAX_HANDS = 2
 
-# API keys - load from .env
-GOOGLE_API_KEY = "fdajfl;kdsjfal;dsjflkdsjfkl;ads" # Set via environment: export GOOGLE_API_KEY="your_key_here"
+# Average this many recent frames' class probabilities before argmax, to
+# reduce flicker between visually similar letters.
+SMOOTHING_FRAMES = 4
+
+# State machine parameters (wall-clock seconds, not frame counts - the
+# frontend's frame rate depends on the viewer's device).
+CONFIDENCE_THRESHOLD = 0.50     # Minimum smoothed confidence to accept a letter into a word
+DEBOUNCE_SECONDS = 0.35         # How long a prediction must hold before it's accepted
+LOW_CONFIDENCE_SECONDS = 0.2    # How long confidence must dip to allow re-signing the same letter
+GAP_RESET_SECONDS = 0.5         # Frames stopped arriving this long -> treat as hands lowered
+
+# Motion gate: mean landmark speed in the renderer's unit square per second.
+# A held pose (MediaPipe jitter only) sits well below this; moving between
+# letters sits well above. Frames above it are not trusted.
+MOTION_SPEED_THRESHOLD = 0.6
+MOTION_EMA_ALPHA = 0.5
+
+# Gemini (gloss words -> English sentence). Without a key, words are joined as-is.
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')

@@ -1,40 +1,19 @@
 import Navbar from './components/Navbar.jsx'
-import CameraFeed from './components/CameraFeed.jsx'
 import PredictionDisplay from './components/PredictionDisplay.jsx'
-import HistoryLog from './components/HistoryLog.jsx'
 import Controls from './components/Controls.jsx'
 import LiveTranslate from './pages/LiveTranslate.jsx'
-import Dashboard from './pages/Dashboard.jsx'
-import Login from './pages/Login.jsx'
-import { useTranslationStore } from './context/TranslationContext.jsx'
 
 export default function App() {
-  const { sentence, glosses, isListening } = useTranslationStore()
-
   return (
-    <div className="min-h-screen bg-background text-foreground font-sans">
+    <div className="min-h-screen bg-background text-foreground">
       <Navbar />
-      <div className="container mx-auto py-8">
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          {/* Live Translation Panel */}
-          <div>
-            <h2 className="text-xl font-bold mb-4">Live Translation</h2>
-            <LiveTranslate />
-          </div>
-
-          {/* Controls Panel */}
-          <div>
-            <h2 className="text-xl font-bold mb-4">Controls</h2>
-            <Controls />
-          </div>
-        </div>
-
-        {/* Prediction Display & History */}
-        <div className="grid gap-6 mt-8">
+      <main className="mx-auto grid max-w-6xl items-start gap-5 px-4 py-6 md:px-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <LiveTranslate />
+        <div className="flex flex-col gap-5">
           <PredictionDisplay />
-          <HistoryLog />
+          <Controls />
         </div>
-      </div>
+      </main>
     </div>
   )
 }

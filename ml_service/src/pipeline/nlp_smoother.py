@@ -1,82 +1,40 @@
-# nlp_smoother.py - Gemini API integration for ISL gloss -> English syntax
-import os
-import google.generativeai as genai
-import json
-import time
+# nlp_smoother.py - Gemini: fingerspelled ISL words -> English sentence
+from src.config import GOOGLE_API_KEY, GEMINI_MODEL
 
-# Configure Gemini API
-API_KEY = os.getenv('GOOGLE_API_KEY') or ''
-if API_KEY:
-    genai.configure(api_key=API_KEY)
-
-DEFAULT_MODEL = 'gemini-1.5-flash'
+_client = None
 
 
-def smooth_glosses_to_sentence(gloss_sequence, model_name=DEFAULT_MODEL):
-    """Convert a sequence of ISL gloss keywords into a natural English sentence.
-    
-    Args:
-        gloss_sequence: List of strings, e.g., ['I', 'STORE', 'GO']
-        model_name: Gemini model name to use
-    
-    Returns:
-        String - the grammatically corrected English sentence
-    """
-    if not gloss_sequence:
+def _get_client():
+    global _client
+    if _client is None and GOOGLE_API_KEY:
+        from google import genai
+        _client = genai.Client(api_key=GOOGLE_API_KEY)
+    return _client
+
+
+def words_to_sentence(words, model_name=GEMINI_MODEL):
+    """Turn fingerspelled words (e.g. ['MY', 'NAME', 'RAM']) into one natural
+    English sentence. Falls back to joining the words when Gemini is
+    unavailable. Blocking - call it off the event loop."""
+    if not words:
         return ''
-    
-    # Initialize model
-    model = genai.GenerativeModel(model_name)
-    
-    # Format the prompt
-    gloss_str = ', '.join(gloss_sequence)
-    prompt = f"""You are an expert Indian Sign Language (ISL) translator.
-Convert this sequence of ISL gloss keywords into a natural, grammatically correct English sentence.
-Return ONLY the final sentence string without quotes, formatting, or extra commentary.
 
-Keywords: {gloss_str}
+    fallback = ' '.join(words).capitalize()
+    client = _get_client()
+    if client is None:
+        return fallback
 
-Final sentence:"""
-    
+    prompt = (
+        'A signer fingerspelled these words letter by letter in Indian Sign Language. '
+        'Letter recognition is imperfect, so a word may have a swapped, missing, or repeated letter.\n'
+        f'Words: {", ".join(words)}\n'
+        'Write the single natural English sentence the signer most likely meant, fixing obvious '
+        'misspellings. Return only the sentence, without quotes or commentary.'
+    )
     try:
-        response = model.generate_content(prompt)
-        sentence = response.text.strip()
-        
-        # Clean up - remove quotes if present
-        if sentence.startswith('"') and sentence.endswith('"'):
-            sentence = sentence[1:-1]
-        if sentence.startswith("'") and sentence.endswith("'"):
-            sentence = sentence[1:-1]
-        
-        return sentence
-    
-    except Exception as e:
-        print(f'Gemini API error: {e}')
-        # Fallback: simple concatenation
-        return ' '.join(gloss_sequence)
-
-
-def batch_translate(gloss_sequences, batch_size=5):
-    """Translate multiple gloss sequences in batch.
-    
-    Args:
-        gloss_sequences: List of lists, each containing gloss keywords
-        batch_size: Number of sequences to process per batch
-    
-    Returns:
-        List of translated sentences
-    """
-    results = []
-    
-    for i in range(0, len(gloss_sequences), batch_size):
-        batch = gloss_sequences[i:i+batch_size]
-        
-        for gloss_seq in batch:
-            sentence = smooth_glosses_to_sentence(gloss_seq)
-            results.append(sentence)
-        
-        # Small delay to respect API rate limits
-        if i + batch_size < len(gloss_sequences):
-            time.sleep(0.5)
-    
-    return results
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        sentence = (response.text or '').strip().strip('"\'')
+        return sentence or fallback
+    except Exception as error:
+        print(f'Gemini API error: {error}')
+        return fallback

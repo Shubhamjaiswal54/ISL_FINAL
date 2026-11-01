@@ -1,36 +1,28 @@
-# main.py - FastAPI server exposing REST & WebSocket prediction endpoints
+# main.py - FastAPI server: two-hand ISL skeleton CNN over REST & WebSocket
+#
+# Run from ml_service/:  python -m src.main
+import asyncio
+import json
+import math
+import time
+from collections import deque
+
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import numpy as np
-import json
-import asyncio
-from pathlib import Path
-import tensorflow as tf
 
-try:
-    from src.config import (FEATURES, SMOOTHING_FRAMES, CONFIDENCE_THRESHOLD,
-                             DEBOUNCE_SECONDS, IDLE_SECONDS, LOW_CONFIDENCE_SECONDS, GAP_RESET_SECONDS,
-                             GOOGLE_API_KEY, MOTION_VELOCITY_THRESHOLD, MOTION_EMA_ALPHA)
-    from src.pipeline.sliding_window import SlidingWindowBuffer
-    from src.pipeline.state_machine import ISLStateMachine
-    from src.pipeline.nlp_smoother import smooth_glosses_to_sentence
-    from src.pipeline.hand_features import add_derived_features, MODEL_FEATURES
-    from src.pipeline.motion_gate import MotionGate
-except ModuleNotFoundError:
-    from config import (FEATURES, SMOOTHING_FRAMES, CONFIDENCE_THRESHOLD,
-                         DEBOUNCE_SECONDS, IDLE_SECONDS, LOW_CONFIDENCE_SECONDS, GAP_RESET_SECONDS,
-                         GOOGLE_API_KEY, MOTION_VELOCITY_THRESHOLD, MOTION_EMA_ALPHA)
-    from pipeline.sliding_window import SlidingWindowBuffer
-    from pipeline.state_machine import ISLStateMachine
-    from pipeline.nlp_smoother import smooth_glosses_to_sentence
-    from pipeline.hand_features import add_derived_features, MODEL_FEATURES
-    from pipeline.motion_gate import MotionGate
+from src.config import (MODEL_PATH, LABELS_PATH, MAX_HANDS, SMOOTHING_FRAMES, CONFIDENCE_THRESHOLD,
+                        DEBOUNCE_SECONDS, LOW_CONFIDENCE_SECONDS, GAP_RESET_SECONDS,
+                        MOTION_SPEED_THRESHOLD, MOTION_EMA_ALPHA)
+from src.pipeline.control_signs import ControlLatch, detect_control
+from src.pipeline.spell_suggest import suggest_words
+from src.pipeline.skeleton_render import HandOrderStabilizer, canonical_points, render_hands
+from src.pipeline.state_machine import ISLStateMachine
+from src.pipeline.motion_gate import MotionGate
+from src.pipeline.nlp_smoother import words_to_sentence
 
-# Initialize FastAPI app
 app = FastAPI(title="VoxSign ML Microservice")
-
-# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -39,278 +31,326 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global state
-# The model classifies a single frame; prob_buffer only smooths flicker by
-# averaging the last few frames' output probabilities before argmax.
-prob_buffer = SlidingWindowBuffer(max_size=SMOOTHING_FRAMES)
-state_machine = ISLStateMachine(
-    confidence_threshold=CONFIDENCE_THRESHOLD,
-    debounce_seconds=DEBOUNCE_SECONDS,
-    idle_seconds=IDLE_SECONDS,
-    low_confidence_seconds=LOW_CONFIDENCE_SECONDS,
-    gap_reset_seconds=GAP_RESET_SECONDS,
-)
-motion_gate = MotionGate(velocity_threshold=MOTION_VELOCITY_THRESHOLD, ema_alpha=MOTION_EMA_ALPHA)
 
-# Load TFLite model
-BASE_DIR = Path(__file__).resolve().parents[1]
-interpreter = None
-input_details = None
-output_details = None
-label_encoder = {}
+def _load_interpreter_class():
+    try:
+        from ai_edge_litert.interpreter import Interpreter
+    except ImportError:
+        try:
+            from tflite_runtime.interpreter import Interpreter
+        except ImportError:
+            import tensorflow as tf
+            Interpreter = tf.lite.Interpreter
+    return Interpreter
+
+
+class SkeletonClassifier:
+    """Renders hands with the training renderer and runs the TFLite CNN."""
+
+    def __init__(self, model_path, labels_path):
+        self.interpreter = _load_interpreter_class()(model_path=str(model_path))
+        self.interpreter.allocate_tensors()
+        self.input_detail = self.interpreter.get_input_details()[0]
+        self.output_detail = self.interpreter.get_output_details()[0]
+        self.img_size = int(self.input_detail['shape'][1])
+        with open(labels_path) as f:
+            self.labels = {int(k): v for k, v in json.load(f).items()}
+
+    def predict(self, hands, ordered=False):
+        image = render_hands(hands, size=self.img_size, ordered=ordered).astype(np.float32)[np.newaxis]
+        self.interpreter.set_tensor(self.input_detail['index'], image)
+        self.interpreter.invoke()
+        return self.interpreter.get_tensor(self.output_detail['index'])[0].astype(np.float32)
+
+
+# One interpreter shared by every connection. TFLite is not thread-safe, so
+# inference is serialized; the lock is held only around the thread that runs it.
+_infer_lock = asyncio.Lock()
+
+
+async def classify(hands, ordered=False):
+    async with _infer_lock:
+        return await asyncio.to_thread(classifier.predict, hands, ordered)
+
+
+classifier = None
 model_load_error = None
-
-
-def set_model_input(tensor):
-    """Adapt float model input to the dtype and quantization expected by TFLite."""
-    detail = input_details[0]
-    model_tensor = tensor
-    if detail['dtype'] in (np.uint8, np.int8):
-        scale, zero_point = detail['quantization']
-        if scale:
-            model_tensor = np.round(tensor / scale + zero_point).clip(
-                np.iinfo(detail['dtype']).min, np.iinfo(detail['dtype']).max
-            ).astype(detail['dtype'])
-    interpreter.set_tensor(detail['index'], model_tensor)
-
-
-def get_model_output():
-    """Return model probabilities as float32 regardless of TFLite output dtype."""
-    detail = output_details[0]
-    output = interpreter.get_tensor(detail['index']).astype(np.float32)
-    if detail['dtype'] in (np.uint8, np.int8):
-        scale, zero_point = detail['quantization']
-        if scale:
-            output = (output - zero_point) * scale
-    return output
-
 try:
-    loaded_interpreter = tf.lite.Interpreter(model_path=str(BASE_DIR / 'models' / 'isl_model.tflite'))
-    loaded_interpreter.allocate_tensors()
-    loaded_input_details = loaded_interpreter.get_input_details()
-    loaded_output_details = loaded_interpreter.get_output_details()
-    
-    with open(BASE_DIR / 'models' / 'label_encoder.json') as f:
-        loaded_labels = {int(k): v for k, v in json.load(f).items()}
-    
-    interpreter = loaded_interpreter
-    input_details = loaded_input_details
-    output_details = loaded_output_details
-    label_encoder = loaded_labels
-    print("TFLite model loaded successfully")
-except Exception as e:
-    model_load_error = str(e)
-    interpreter = None
-    input_details = None
-    output_details = None
-    print(f"Warning: Could not load TFLite model: {e}")
-
-# Out-of-distribution rejection (currently disabled - see is_out_of_distribution).
-#
-# This was a stopgap for rejecting non-sign poses (resting hand, mid-transition)
-# before a real IDLE class existed. Its centroids/thresholds are computed purely
-# from the Kaggle training photos' own distribution (scripts/2_preprocess_and_augment.py),
-# so it has no notion of *your* webcam, hand, lighting, or angle - a genuine
-# live sign can legitimately sit farther from those centroids than any Kaggle
-# photo did, and gets its confidence wrongly zeroed. Now that IDLE is a real
-# trained class (see models/label_encoder.json), it does this job properly and
-# this geometric heuristic is redundant. Loaded but not applied below; flip
-# APPLY_OOD_GATE on only if IDLE alone proves insufficient, and consider a much
-# larger margin than the training-distribution-derived default.
-APPLY_OOD_GATE = False
-ood_centroids = None
-ood_thresholds = None
-try:
-    with open(BASE_DIR / 'models' / 'ood_centroids.json') as f:
-        ood_stats = json.load(f)
-    ood_centroids = np.array(ood_stats['centroids'], dtype=np.float32)
-    ood_thresholds = np.array(ood_stats['thresholds'], dtype=np.float32) * ood_stats.get('margin', 1.3)
-except Exception as e:
-    print(f"Warning: OOD rejection stats not loaded: {e}")
+    classifier = SkeletonClassifier(MODEL_PATH, LABELS_PATH)
+    print(f"Skeleton CNN loaded: {len(classifier.labels)} classes, {classifier.img_size}px input")
+except Exception as error:
+    model_load_error = str(error)
+    print(f"Warning: could not load model from {MODEL_PATH}: {error}")
 
 
-def is_out_of_distribution(raw_landmarks, predicted_idx):
-    if not APPLY_OOD_GATE or ood_centroids is None or predicted_idx >= len(ood_centroids):
-        return False
-    distance = float(np.linalg.norm(raw_landmarks - ood_centroids[predicted_idx]))
-    return distance > ood_thresholds[predicted_idx]
+def parse_hands(raw_hands):
+    """Validate 0-2 hands of 21 [x, y] or [x, y, z] points in pixel units."""
+    if not isinstance(raw_hands, list) or len(raw_hands) > MAX_HANDS:
+        raise ValueError(f"'hands' must be a list of at most {MAX_HANDS} hands")
+    hands = []
+    for raw in raw_hands:
+        hand = np.asarray(raw, dtype=np.float32)
+        if hand.ndim != 2 or hand.shape[0] != 21 or hand.shape[1] not in (2, 3):
+            raise ValueError("each hand must be 21 points of [x, y] or [x, y, z]")
+        if not np.all(np.isfinite(hand)):
+            raise ValueError("hand points must be finite numbers")
+        hands.append(hand)
+    return hands
 
 
-# Pydantic models
-class LandmarkData(BaseModel):
-    landmarks: list  # 126-dimensional feature vector
+class TranslationSession:
+    """Per-connection smoothing, motion, and sentence state."""
+
+    def __init__(self):
+        self.recent_probs = deque(maxlen=SMOOTHING_FRAMES)
+        self.motion = MotionGate(speed_threshold=MOTION_SPEED_THRESHOLD, ema_alpha=MOTION_EMA_ALPHA)
+        self.order = HandOrderStabilizer()
+        self.seen_hands = None
+        self.controls = ControlLatch()
+        self.state = ISLStateMachine(
+            confidence_threshold=CONFIDENCE_THRESHOLD,
+            debounce_seconds=DEBOUNCE_SECONDS,
+            low_confidence_seconds=LOW_CONFIDENCE_SECONDS,
+            gap_reset_seconds=GAP_RESET_SECONDS,
+        )
+
+    def _clear_tracking(self):
+        self.recent_probs.clear()
+        self.motion.reset()
+        self.order.reset()
+        self.seen_hands = None
+        self.controls.reset()
+
+    def _apply_control(self, name):
+        if name == 'space':
+            self.state.space()
+        elif name == 'backspace':
+            self.state.delete_character()
+
+    async def process(self, hands, now):
+        """Returns the prediction message for one frame.
+
+        `now` is the client's capture time, so a frame processed late is still
+        judged by how long the signer actually held the pose. An empty hand
+        list does not end a word or a sentence.
+        """
+        if not hands:
+            self._clear_tracking()
+            self.state.hand_absent(now)
+            return self._message(None, 0.0, False, False, 0)
+
+        held, fired = self.controls.update(detect_control(hands), now)
+        if held:
+            if fired:
+                self._apply_control(self.controls.name)
+            return self._message(None, 1.0, False, True, len(hands), control=self.controls.name, control_fired=fired)
+
+        # A one-hand frame and a two-hand frame of the same letter are
+        # different pictures. Averaging them produces a third, wrong letter.
+        if len(hands) != self.seen_hands:
+            self.recent_probs.clear()
+            self.motion.reset()
+            self.seen_hands = len(hands)
+
+        ordered = self.order.apply(hands)
+        self.recent_probs.append(await classify(ordered, ordered=True))
+        probs = np.mean(self.recent_probs, axis=0)
+        predicted_idx = int(np.argmax(probs))
+        confidence = float(probs[predicted_idx])
+
+        settled = self.motion.update(canonical_points(ordered, ordered=True), now)
+        label = classifier.labels.get(predicted_idx, f"unknown_{predicted_idx}")
+        accepted = self.state.update(label, confidence if settled else 0.0, now)
+        return self._message(label, confidence, accepted, settled, len(hands))
+
+    def finish(self):
+        """Stop was pressed: end the sentence with whatever was spelled."""
+        words = self.state.finish()
+        self._clear_tracking()
+        return words
+
+    def gloss_payload(self):
+        current = self.state.current_word
+        return {
+            "type": "glosses",
+            "glosses": self.state.get_sentence_glosses(),
+            "currentWord": current,
+            "suggestions": suggest_words(current),
+            "threshold": CONFIDENCE_THRESHOLD,
+        }
+
+    def _message(self, label, confidence, accepted, settled, hand_count, control=None, control_fired=False):
+        current = self.state.current_word
+        return {
+            "type": "prediction",
+            "predictedLabel": label,
+            "confidence": confidence,
+            "accepted": accepted,
+            "word": label if accepted else None,
+            "settled": settled,
+            "handCount": hand_count,
+            "currentWord": current,
+            "suggestions": suggest_words(current),
+            "glosses": self.state.get_sentence_glosses(),
+            "threshold": CONFIDENCE_THRESHOLD,
+            "control": control,
+            "controlFired": control_fired,
+        }
 
 
-class SentenceResponse(BaseModel):
-    sentence: str
-    glosses: list
+class HandsPayload(BaseModel):
+    hands: list
 
 
 @app.get("/")
 async def root():
-    return {"message": "VoxSign ML Service is running", "status": "ok"}
+    return {
+        "message": "VoxSign ML Service is running",
+        "status": "ok" if classifier else "model_unavailable",
+        "detail": model_load_error,
+    }
 
 
-@app.post("/predict", response_model=SentenceResponse)
-async def predict_gloss(data: LandmarkData):
-    """Single-frame prediction endpoint.
-
-    Accepts a single 126-dimensional feature vector and returns
-    the predicted gloss word if confidence threshold is met.
-    """
-    if not interpreter:
+@app.post("/predict")
+async def predict(payload: HandsPayload):
+    """Stateless single-frame classification (no smoothing or sentence state)."""
+    if not classifier:
         raise HTTPException(status_code=503, detail=f"Model not loaded: {model_load_error}")
-
     try:
-        # Normalize and reshape
-        features = np.array(data.landmarks, dtype=np.float32)
-        if features.shape != (FEATURES,):
-            raise HTTPException(status_code=400, detail=f"Landmarks must be {FEATURES}-dimensional")
+        hands = parse_hands(payload.hands)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    if not hands:
+        raise HTTPException(status_code=400, detail="at least one hand is required")
 
-        # Add finger-curl/thumb-palm features, then run inference directly on
-        # this one frame - the model classifies a static pose, no temporal
-        # window is needed for model input.
-        model_features = add_derived_features(features)
-        input_data = model_features.reshape(1, MODEL_FEATURES).astype(np.float32)
-        set_model_input(input_data)
-        interpreter.invoke()
+    async with _infer_lock:
+        probs = await asyncio.to_thread(classifier.predict, hands, False)
+    top = np.argsort(probs)[::-1][:3]
+    return {
+        "label": classifier.labels[int(top[0])],
+        "confidence": float(probs[top[0]]),
+        "top3": [{"label": classifier.labels[int(i)], "confidence": float(probs[i])} for i in top],
+    }
 
-        # Smooth: average the last few frames' probabilities to reduce flicker
-        prob_buffer.add(get_model_output()[0])
-        output_data = prob_buffer.get_window().mean(axis=0)
-        predicted_idx = int(np.argmax(output_data))
-        confidence = float(output_data[predicted_idx])
 
-        # Reject if this frame's raw pose doesn't actually resemble the predicted letter
-        if is_out_of_distribution(model_features, predicted_idx):
-            confidence = 0.0
+def _capture_time(data):
+    """Client capture time in seconds. Frames are judged on this clock, not
+    on when the server got around to them."""
+    stamp = data.get("t")
+    if isinstance(stamp, (int, float)) and math.isfinite(stamp):
+        return float(stamp) / 1000.0
+    return time.monotonic()
 
-        # Reject if the hand is still moving between letters - the classifier
-        # was only ever trained on held static poses.
-        if not motion_gate.update(features):
-            confidence = 0.0
 
-        # Decode label
-        predicted_label = label_encoder.get(predicted_idx, f'unknown_{predicted_idx}')
-
-        # Update state machine
-        accepted = state_machine.update(predicted_label, confidence)
-        
-        # Get current sentence glosses
-        current_glosses = state_machine.get_sentence_glosses()
-        
-        # If sentence was flushed (idle detected), generate English sentence
-        final_sentence = ''
-        if state_machine.is_idle:
-            final_sentence = smooth_glosses_to_sentence(current_glosses)
-            state_machine.reset()
-        
-        return {
-            "sentence": final_sentence,
-            "glosses": current_glosses
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def _emit_sentence(websocket, words):
+    """Runs off the receive loop so signing can continue while Gemini answers."""
+    sentence = await asyncio.to_thread(words_to_sentence, words)
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "sentence",
+            "sentence": sentence,
+            "glosses": words,
+        }))
+    except Exception:
+        pass
 
 
 @app.websocket("/ws/predict")
 async def websocket_predict(websocket: WebSocket):
-    """WebSocket endpoint for real-time landmark streaming.
-    
-    Clients send 126-dimensional feature vectors,
-    and the server streams back prediction updates.
+    """Clients stream {"hands": [...], "t": ms} frames. An empty hand list
+    means nothing is visible. Words end on {"type": "space"} and the
+    sentence is built on {"type": "speak"}.
+
+    Only the newest frame is kept when inference falls behind. Control
+    messages are never dropped. Capture timestamps make a held letter count
+    even if the frames in between were skipped.
     """
     await websocket.accept()
-
-    # Each browser session needs its own smoothing buffer, sentence state, and
-    # motion tracker - velocity is meaningless if computed across two different
-    # viewers' frames.
-    session_probs = SlidingWindowBuffer(max_size=SMOOTHING_FRAMES)
-    session_state = ISLStateMachine(
-        confidence_threshold=CONFIDENCE_THRESHOLD,
-        debounce_seconds=DEBOUNCE_SECONDS,
-        idle_seconds=IDLE_SECONDS,
-        low_confidence_seconds=LOW_CONFIDENCE_SECONDS,
-        gap_reset_seconds=GAP_RESET_SECONDS,
-    )
-    session_motion = MotionGate(velocity_threshold=MOTION_VELOCITY_THRESHOLD, ema_alpha=MOTION_EMA_ALPHA)
-
-    if not interpreter or not input_details or not output_details:
-        await websocket.send_text(json.dumps({
-            "error": "Model not loaded",
-            "detail": model_load_error,
-        }))
+    if not classifier:
+        await websocket.send_text(json.dumps({"error": "Model not loaded", "detail": model_load_error}))
         await websocket.close(code=1011, reason="ML model unavailable")
-        print(f"[ML] WebSocket rejected: model unavailable: {model_load_error}")
         return
-    
+
+    session = TranslationSession()
+    incoming = asyncio.Queue()
+    latest_frame = {"data": None}
+
+    async def receive_frames():
+        try:
+            while True:
+                data = await websocket.receive_json()
+                if data.get("type") in ("finish", "reset", "backspace", "space", "speak"):
+                    await incoming.put(data)
+                else:
+                    latest_frame["data"] = data
+                    await incoming.put({"type": "frame"})
+        except WebSocketDisconnect:
+            await incoming.put({"type": "disconnect"})
+
+    async def handle(data):
+        if data.get("type") == "reset":
+            session.finish()
+            return
+        if data.get("type") == "finish":
+            words = session.finish()
+            if words:
+                asyncio.create_task(_emit_sentence(websocket, words))
+            return
+        if data.get("type") == "backspace":
+            index = data.get("index")
+            if type(index) is int:
+                session.state.backspace(index)
+            else:
+                session.state.delete_character()
+            await websocket.send_text(json.dumps(session.gloss_payload()))
+            return
+        if data.get("type") == "space":
+            session.state.space(data.get("word"))
+            await websocket.send_text(json.dumps(session.gloss_payload()))
+            return
+        if data.get("type") == "speak":
+            session.state.space()
+            words = session.state.words[:]
+            await websocket.send_text(json.dumps(session.gloss_payload()))
+            if words:
+                asyncio.create_task(_emit_sentence(websocket, words))
+            return
+        if data.get("type") == "frame":
+            data = latest_frame["data"]
+            latest_frame["data"] = None
+            if data is None:
+                return
+
+        try:
+            hands = parse_hands(data.get("hands", []))
+        except ValueError as error:
+            await websocket.send_text(json.dumps({"error": str(error)}))
+            return
+
+        message = await session.process(hands, _capture_time(data))
+        await websocket.send_text(json.dumps(message))
+
+    receiver = asyncio.create_task(receive_frames())
     try:
         while True:
-            data = await websocket.receive_json()
-            landmarks = np.array(data.get('landmarks', []), dtype=np.float32)
-            print(f"[Backend -> ML] Landmark vector received: length={landmarks.size}")
-
-            if landmarks.shape != (FEATURES,):
-                await websocket.send_text(json.dumps({
-                    "error": f"Landmarks must be {FEATURES}-dimensional"
-                }))
-                continue
-
-            # Add finger-curl/thumb-palm features, then run inference directly
-            # on this one frame - no warm-up delay waiting for a window to
-            # fill, since the model classifies a single static pose.
-            model_features = add_derived_features(landmarks)
-            input_data = model_features.reshape(1, MODEL_FEATURES).astype(np.float32)
-            set_model_input(input_data)
-            interpreter.invoke()
-
-            # Smooth: average the last few frames' probabilities to reduce flicker
-            session_probs.add(get_model_output()[0])
-            output_data = session_probs.get_window().mean(axis=0)
-            predicted_idx = int(np.argmax(output_data))
-            confidence = float(output_data[predicted_idx])
-
-            # Reject if this frame's raw pose doesn't actually resemble the predicted letter
-            if is_out_of_distribution(model_features, predicted_idx):
-                confidence = 0.0
-
-            # Reject if the hand is still moving between letters - the classifier
-            # was only ever trained on held static poses, so a mid-transition
-            # frame is outside its training distribution.
-            settled = session_motion.update(landmarks)
-            if not settled:
-                confidence = 0.0
-
-            predicted_label = label_encoder.get(predicted_idx, f'unknown_{predicted_idx}')
-
-            # Update state machine
-            accepted = session_state.update(predicted_label, confidence)
-            current_glosses = session_state.get_sentence_glosses()
-
-            # Build response
-            response = {
-                "word": predicted_label if accepted else None,
-                "predictedLabel": predicted_label,
-                "accepted": accepted,
-                "confidence": confidence,
-                "settled": settled,
-                "sentence": "",
-                "glosses": current_glosses
-            }
-            
-            # If sentence flushed, generate English sentence
-            if session_state.is_idle:
-                response["sentence"] = smooth_glosses_to_sentence(current_glosses)
-                session_state.reset()
-            
-            await websocket.send_text(json.dumps(response))
-            print(f"[ML -> Backend] Prediction sent: predicted={predicted_label}, accepted={accepted}, word={response['word']}, confidence={confidence:.3f}, glosses={response['glosses']}")
-            
-    except WebSocketDisconnect:
-        print("WebSocket client disconnected")
+            data = await incoming.get()
+            # A burst of frame notifications collapses to the newest one.
+            # Control and disconnect messages keep their place in line.
+            if data.get("type") == "frame":
+                while True:
+                    try:
+                        nxt = incoming.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if nxt.get("type") != "frame":
+                        await handle(data)
+                        data = nxt
+                        break
+            if data.get("type") == "disconnect":
+                break
+            await handle(data)
+    finally:
+        receiver.cancel()
 
 
 if __name__ == '__main__':

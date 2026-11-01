@@ -45,24 +45,66 @@ npm install
 npm run dev
 ```
 
-## Train the A-Z Image Dataset
+## Train the ISL A-Z Model (two-hand skeleton CNN)
 
-Arrange the 1,200 images into one folder per class:
+ISL fingerspelling is mostly two-handed, so recognition works on both hands
+together: MediaPipe finds up to two hands, both skeletons are drawn onto one
+canvas (`src/pipeline/skeleton_render.py`), and a CNN classifies the canvas.
+The same renderer is used for training and live inference, and the background
+never reaches the model - only the hand skeletons do.
+
+The ML service needs Python 3.10-3.13 (TensorFlow has no newer builds yet).
+
+1. Put your photos in one folder per letter (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`):
 
 ```
-ml_service/data/alphabet_dataset/
+ml_service/data/original_images/
 ├── A/
 ├── B/
 ├── ...
 └── Z/
 ```
-Image files can be `.jpg`, `.jpeg`, `.png`, `.bmp`, or `.webp`. Run the pipeline from `ml_service`:
+
+2. From `ml_service/`:
+
 ```bash
-python scripts/extract_kaggle_dataset.py --input-dir data/alphabet_dataset
-python scripts/2_preprocess_and_augment.py
-python scripts/3_train_model.py
-python scripts/4_export_to_tflite.py
-python -m src.main
+python scripts/process_original_images.py   # photos -> data/isl_landmarks.npz (+ data/skeleton_previews/)
+python scripts/train_skeleton_cnn.py        # -> models/isl_skeleton_cnn.tflite + labels + report
+python -m src.main                          # serve on :8000
 ```
 
-The extractor detects and normalizes hand landmarks, writes the discovered alphabet labels to `data/actions.json`, and saves the model label mapping to `models/label_encoder.json`. Images without a detectable hand are skipped and reported per class.
+- `process_original_images.py` prints, per letter, how many photos had 0/1/2
+  hands detected. Every photo with at least one detected hand is kept, including
+  ones whose hand count differs from `src/pipeline/isl_alphabet_reference.py`,
+  because live signing produces those frames too. Photos are rotated from their
+  EXIF orientation, and ordered by file time. Look at `data/skeleton_previews/`
+  to see exactly what the CNN sees.
+- `train_skeleton_cnn.py` holds out a later recording session when one exists
+  (a gap of 30 seconds), and otherwise the last 15% of each letter, dropping
+  the photos right on the cut so a burst doesn't land in both sets. A letter
+  with fewer than 8 photos stays in training and is not scored. It prints the
+  most-confused letter pairs and writes confusion-derived letter groups to
+  `models/isl_skeleton_report.json`.
+- Record more photos with `python scripts/1b_collect_skeleton_images.py --gesture A --samples 200`.
+  They land in `data/original_images/` and are picked up by the extractor.
+- If the MediaPipe model download fails (e.g. behind a TLS-inspecting proxy), fetch it with
+  `curl -L -o models/hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`.
+
+### Using it live
+
+Press **Start** to open the camera, sign a letter, and hold it briefly until
+it appears. **Space** keeps the word you spelled. A misspelling
+such as `hallo` offers `hello`, and that suggestion is used only if you tap it.
+**Backspace** removes the last
+letter. **Speak** turns the words into a sentence (Gemini when
+`GOOGLE_API_KEY` is set in `ml_service/.env`) and reads it aloud. **Stop**
+turns the camera off and leaves the words on screen.
+
+Photograph signs with the front camera. Live landmarks are mirrored to match a
+front-camera selfie; a photo taken of you by someone else will be the opposite
+left-right.
+
+The older single-hand scripts (`extract_kaggle_dataset.py`, `1_collect_landmarks.py`,
+`2_preprocess_and_augment.py`, `3_train_model.py`, `4_export_to_tflite.py`,
+`build_skeleton_dataset.py`) belong to the previous ASL-style landmark MLP and
+are not used by the ISL pipeline.
