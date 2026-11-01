@@ -1,15 +1,12 @@
-import { Link, NavLink } from 'react-router-dom'
-
 export default function Navbar() {
   return (
-    <nav className="bg-card border border-muted/30 backdrop-blur-sm px-6 py-4">
-      <div className="max-w-7xl mx-auto flex items-center justify-between">
-        <Link to="/" className="text-2xl font-bold text-accent">VoxSign</Link>
-        <ul className="flex gap-6 text-muted">
-          <li><NavLink to="/live" className={({ isActive }) => isActive ? 'text-accent' : 'hover:text-accent'}>Live</NavLink></li>
-          <li><NavLink to="/dashboard" className={({ isActive }) => isActive ? 'text-accent' : 'hover:text-accent'}>Dashboard</NavLink></li>
-        </ul>
+    <header className="border-b border-white/10 bg-card/80 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 md:px-6">
+        <div>
+          <p className="text-xl font-semibold tracking-tight text-accent">VoxSign</p>
+          <p className="text-xs text-muted">Live Indian Sign Language</p>
+        </div>
       </div>
-    </nav>
+    </header>
   )
 }

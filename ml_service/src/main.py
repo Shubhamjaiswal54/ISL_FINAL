@@ -13,8 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.config import (MODEL_PATH, LABELS_PATH, MAX_HANDS, SMOOTHING_FRAMES, CONFIDENCE_THRESHOLD,
-                        DEBOUNCE_SECONDS, LOW_CONFIDENCE_SECONDS, GAP_RESET_SECONDS, WORD_GAP_SECONDS,
-                        SENTENCE_GAP_SECONDS, MOTION_SPEED_THRESHOLD, MOTION_EMA_ALPHA)
+                        DEBOUNCE_SECONDS, LOW_CONFIDENCE_SECONDS, GAP_RESET_SECONDS,
+                        MOTION_SPEED_THRESHOLD, MOTION_EMA_ALPHA)
+from src.pipeline.spell_suggest import suggest_words
 from src.pipeline.skeleton_render import HandOrderStabilizer, canonical_points, render_hands
 from src.pipeline.state_machine import ISLStateMachine
 from src.pipeline.motion_gate import MotionGate
@@ -109,8 +110,6 @@ class TranslationSession:
             debounce_seconds=DEBOUNCE_SECONDS,
             low_confidence_seconds=LOW_CONFIDENCE_SECONDS,
             gap_reset_seconds=GAP_RESET_SECONDS,
-            word_gap_seconds=WORD_GAP_SECONDS,
-            sentence_gap_seconds=SENTENCE_GAP_SECONDS,
         )
 
     def _clear_tracking(self):
@@ -120,16 +119,16 @@ class TranslationSession:
         self.seen_hands = None
 
     async def process(self, hands, now):
-        """Returns (prediction message, finished sentence words or None).
+        """Returns the prediction message for one frame.
 
-        `now` is the client's capture time, so a frame processed late (a slow
-        inference, or a Gemini call) is still judged by how long the signer
-        actually held the pose.
+        `now` is the client's capture time, so a frame processed late is still
+        judged by how long the signer actually held the pose. An empty hand
+        list does not end a word or a sentence.
         """
         if not hands:
             self._clear_tracking()
-            finished = self.state.hand_absent(now)
-            return self._message(None, 0.0, False, False, 0), finished
+            self.state.hand_absent(now)
+            return self._message(None, 0.0, False, False, 0)
 
         # A one-hand frame and a two-hand frame of the same letter are
         # different pictures. Averaging them produces a third, wrong letter.
@@ -147,7 +146,7 @@ class TranslationSession:
         settled = self.motion.update(canonical_points(ordered, ordered=True), now)
         label = classifier.labels.get(predicted_idx, f"unknown_{predicted_idx}")
         accepted = self.state.update(label, confidence if settled else 0.0, now)
-        return self._message(label, confidence, accepted, settled, len(hands)), None
+        return self._message(label, confidence, accepted, settled, len(hands))
 
     def finish(self):
         """Stop was pressed: end the sentence with whatever was spelled."""
@@ -155,7 +154,18 @@ class TranslationSession:
         self._clear_tracking()
         return words
 
+    def gloss_payload(self):
+        current = self.state.current_word
+        return {
+            "type": "glosses",
+            "glosses": self.state.get_sentence_glosses(),
+            "currentWord": current,
+            "suggestions": suggest_words(current),
+            "threshold": CONFIDENCE_THRESHOLD,
+        }
+
     def _message(self, label, confidence, accepted, settled, hand_count):
+        current = self.state.current_word
         return {
             "type": "prediction",
             "predictedLabel": label,
@@ -164,8 +174,10 @@ class TranslationSession:
             "word": label if accepted else None,
             "settled": settled,
             "handCount": hand_count,
-            "currentWord": self.state.current_word,
+            "currentWord": current,
+            "suggestions": suggest_words(current),
             "glosses": self.state.get_sentence_glosses(),
+            "threshold": CONFIDENCE_THRESHOLD,
         }
 
 
@@ -229,8 +241,8 @@ async def _emit_sentence(websocket, words):
 @app.websocket("/ws/predict")
 async def websocket_predict(websocket: WebSocket):
     """Clients stream {"hands": [...], "t": ms} frames. An empty hand list
-    means nothing is visible, which is what ends words and sentences.
-    {"type": "finish"} ends the sentence immediately (the Stop button).
+    means nothing is visible. Words end on {"type": "space"} and the
+    sentence is built on {"type": "speak"}.
 
     Only the newest frame is kept when inference falls behind. Control
     messages are never dropped. Capture timestamps make a held letter count
@@ -250,7 +262,7 @@ async def websocket_predict(websocket: WebSocket):
         try:
             while True:
                 data = await websocket.receive_json()
-                if data.get("type") in ("finish", "reset"):
+                if data.get("type") in ("finish", "reset", "backspace", "space", "speak"):
                     await incoming.put(data)
                 else:
                     latest_frame["data"] = data
@@ -267,6 +279,25 @@ async def websocket_predict(websocket: WebSocket):
             if words:
                 asyncio.create_task(_emit_sentence(websocket, words))
             return
+        if data.get("type") == "backspace":
+            index = data.get("index")
+            if type(index) is int:
+                session.state.backspace(index)
+            else:
+                session.state.delete_character()
+            await websocket.send_text(json.dumps(session.gloss_payload()))
+            return
+        if data.get("type") == "space":
+            session.state.space(data.get("word"))
+            await websocket.send_text(json.dumps(session.gloss_payload()))
+            return
+        if data.get("type") == "speak":
+            session.state.space()
+            words = session.state.words[:]
+            await websocket.send_text(json.dumps(session.gloss_payload()))
+            if words:
+                asyncio.create_task(_emit_sentence(websocket, words))
+            return
         if data.get("type") == "frame":
             data = latest_frame["data"]
             latest_frame["data"] = None
@@ -279,10 +310,8 @@ async def websocket_predict(websocket: WebSocket):
             await websocket.send_text(json.dumps({"error": str(error)}))
             return
 
-        message, finished_words = await session.process(hands, _capture_time(data))
+        message = await session.process(hands, _capture_time(data))
         await websocket.send_text(json.dumps(message))
-        if finished_words:
-            asyncio.create_task(_emit_sentence(websocket, finished_words))
 
     receiver = asyncio.create_task(receive_frames())
     try:

@@ -37,9 +37,9 @@ export const useSocket = () => {
     if (currentSocket?.connected) currentSocket.emit('landmark-data', { hands, t: performance.now() })
   }, [])
 
-  const emitControl = useCallback((action) => {
+  const emitControl = useCallback((action, extra) => {
     const currentSocket = socketRef.current
-    if (currentSocket?.connected) currentSocket.emit('translation-control', { action })
+    if (currentSocket?.connected) currentSocket.emit('translation-control', { action, ...extra })
   }, [])
 
   return { socket, emitFrame, emitControl, mlStatus }

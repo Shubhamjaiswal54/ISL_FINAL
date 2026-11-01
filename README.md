@@ -92,11 +92,12 @@ python -m src.main                          # serve on :8000
 
 ### Using it live
 
-Press **Start** (this opens the camera), sign a letter and hold it briefly until
-it appears. Lower your hands for about 2 seconds to end a word, and for about
-4.5 seconds to end the sentence. **Stop** ends the sentence immediately and
-turns the camera off. The words are then sent to Gemini (set `GOOGLE_API_KEY` in
-`ml_service/.env`) and the sentence is spoken aloud.
+Press **Start** to open the camera, sign a letter, and hold it briefly until
+it appears. **Space** ends the word. A misspelling such as `hallo` offers
+`hello`, and Space uses the first suggestion. **Backspace** removes the last
+letter. **Speak** turns the words into a sentence (Gemini when
+`GOOGLE_API_KEY` is set in `ml_service/.env`) and reads it aloud. **Stop**
+turns the camera off and leaves the words on screen.
 
 Photograph signs with the front camera. Live landmarks are mirrored to match a
 front-camera selfie; a photo taken of you by someone else will be the opposite

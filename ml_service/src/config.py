@@ -24,15 +24,10 @@ SMOOTHING_FRAMES = 4
 
 # State machine parameters (wall-clock seconds, not frame counts - the
 # frontend's frame rate depends on the viewer's device).
-CONFIDENCE_THRESHOLD = 0.80     # Minimum smoothed confidence to accept a letter
+CONFIDENCE_THRESHOLD = 0.50     # Minimum smoothed confidence to accept a letter into a word
 DEBOUNCE_SECONDS = 0.35         # How long a prediction must hold before it's accepted
 LOW_CONFIDENCE_SECONDS = 0.2    # How long confidence must dip to allow re-signing the same letter
 GAP_RESET_SECONDS = 0.5         # Frames stopped arriving this long -> treat as hands lowered
-# Two-handed signs hide each other, and MediaPipe then reports no hands for
-# a stretch. The gaps are long enough that a brief detection dropout does
-# not split a word the signer is still spelling.
-WORD_GAP_SECONDS = 2.0          # Hands out of frame this long ends the current word
-SENTENCE_GAP_SECONDS = 4.5      # Hands out of frame this long ends the sentence (sent to Gemini)
 
 # Motion gate: mean landmark speed in the renderer's unit square per second.
 # A held pose (MediaPipe jitter only) sits well below this; moving between
