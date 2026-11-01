@@ -80,8 +80,12 @@ export const translationSocket = (io) => {
     })
 
     socket.on('translation-control', (message) => {
-      if (message?.action === 'finish' || message?.action === 'reset') {
-        sendToML({ type: message.action })
+      const action = message?.action
+      if (action === 'finish' || action === 'reset' || action === 'backspace' || action === 'space' || action === 'speak') {
+        const payload = { type: action }
+        if (Number.isInteger(message.index)) payload.index = message.index
+        if (typeof message.word === 'string') payload.word = message.word
+        sendToML(payload)
       }
     })
 

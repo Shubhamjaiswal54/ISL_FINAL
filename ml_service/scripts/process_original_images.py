@@ -53,13 +53,15 @@ def natural_key(name):
 
 
 def create_landmarker():
+    # 0.35 rather than 0.5: ISL hands are often partly hidden behind each
+    # other, and the stricter default was returning no hand at all.
     return vision.HandLandmarker.create_from_options(
         vision.HandLandmarkerOptions(
             base_options=python.BaseOptions(model_asset_path=MODEL_PATH),
             running_mode=vision.RunningMode.IMAGE,
             num_hands=2,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
+            min_hand_detection_confidence=0.35,
+            min_hand_presence_confidence=0.35,
         )
     )
 
@@ -72,22 +74,63 @@ def read_image(path):
     return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
 
 
-def detect_hands(landmarker, image_bgr):
-    """Return a list of 0-2 hands, each (21, 3) in pixel units: x * width,
-    y * height, z * width (MediaPipe's z shares x's scale)."""
-    h, w = image_bgr.shape[:2]
-    longest = max(h, w)
-    if longest > MAX_IMAGE_SIDE:
-        factor = MAX_IMAGE_SIDE / longest
-        image_bgr = cv2.resize(image_bgr, (round(w * factor), round(h * factor)), interpolation=cv2.INTER_AREA)
-        h, w = image_bgr.shape[:2]
-
-    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+def _detect_on(landmarker, image_bgr):
+    """Hands in one image, coordinates in that image's own pixels."""
+    height, width = image_bgr.shape[:2]
+    rgb = np.ascontiguousarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
     result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
     return [
-        np.array([[lm.x * w, lm.y * h, lm.z * w] for lm in hand], dtype=np.float32)
+        np.array([[lm.x * width, lm.y * height, lm.z * width] for lm in hand], dtype=np.float32)
         for hand in (result.hand_landmarks or [])
     ]
+
+
+def _same_hand(a, b, limit):
+    return float(np.linalg.norm(a[0, :2] - b[0, :2])) < limit
+
+
+def detect_hands(landmarker, image_bgr):
+    """Return 0-2 hands, each (21, 3) in the full photo's pixel units.
+
+    A single full-frame pass is what produced the one-hand counts in the
+    first extraction: MediaPipe often reports only the clearer hand when
+    two hands overlap, which is most of ISL. When that pass finds fewer
+    than two hands, each side of the photo is scanned on its own and a new
+    hand is kept only if its wrist is not the one already found.
+    """
+    height, width = image_bgr.shape[:2]
+    longest = max(height, width)
+    if longest > MAX_IMAGE_SIDE:
+        factor = MAX_IMAGE_SIDE / longest
+        image_bgr = cv2.resize(image_bgr, (round(width * factor), round(height * factor)), interpolation=cv2.INTER_AREA)
+        height, width = image_bgr.shape[:2]
+
+    found = _detect_on(landmarker, image_bgr)
+    if len(found) >= 2:
+        return found[:2]
+
+    # Overlap in the middle so a centered hand is not cut in half.
+    crops = (
+        (image_bgr[:, :int(width * 0.7)], 0),
+        (image_bgr[:, int(width * 0.3):], int(width * 0.3)),
+    )
+    for crop, x_offset in crops:
+        if crop.shape[1] < 20:
+            continue
+        for hand in _detect_on(landmarker, crop):
+            hand = hand.copy()
+            hand[:, 0] += x_offset
+            found.append(hand)
+
+    kept = []
+    duplicate_limit = 0.04 * max(height, width)
+    for hand in found:
+        if any(_same_hand(hand, previous, duplicate_limit) for previous in kept):
+            continue
+        kept.append(hand)
+        if len(kept) == 2:
+            break
+    return kept
 
 
 def process_dataset(input_dir, output_path, previews_dir, num_previews):
@@ -100,6 +143,12 @@ def process_dataset(input_dir, output_path, previews_dir, num_previews):
     )
     if not class_dirs:
         raise SystemExit(f'No class folders found in {input_dir}. Expected A/, B/, ... Z/.')
+    not_letters = [name for name in class_dirs if name.upper() not in set('ABCDEFGHIJKLMNOPQRSTUVWXYZ')]
+    if not_letters:
+        print(f'Folders that are not letters A-Z: {not_letters}', flush=True)
+        print('Each folder name becomes the class the model learns. A folder named "0" is the '
+              'digit zero, not the letter O. Rename letter folders to A, B, C, ... before training.',
+              flush=True)
 
     points, hand_counts, labels, files, orders = [], [], [], [], []
     for class_dir in class_dirs:
@@ -158,10 +207,12 @@ def process_dataset(input_dir, output_path, previews_dir, num_previews):
         print(f'{label} (chart says {need_hands or "any"}-hand): saved {stats["saved"]}/{len(paths)}'
               f' | no hand {stats["no_hand"]}, other count {stats["other_count"]}'
               f', unreadable {stats["unreadable"]} | detected -> {counts}', flush=True)
-        if paths and stats['other_count'] > len(paths) / 2:
-            print(f'  Note: most {label} photos show a different hand count than '
-                  f'isl_alphabet_reference.py ({need_hands}). They are kept, because live '
-                  f'signing produces those frames too.', flush=True)
+        two_hands = detected_counts.get(2, 0)
+        if stats['saved'] and two_hands < stats['saved'] * 0.05 and need_hands != 1:
+            print(f'  WARNING: {label} has {two_hands} two-hand photo(s) out of {stats["saved"]} saved. '
+                  f'If this sign uses both hands, open data/skeleton_previews/{label}/ and compare '
+                  f'it with the original photo. A one-hand skeleton means the second hand was not found.',
+                  flush=True)
 
     landmarker.close()
     if not points:
