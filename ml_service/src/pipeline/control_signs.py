@@ -1,10 +1,9 @@
-# control_signs.py - Space, backspace, and accept, read from the hand pose
+# control_signs.py - Space and backspace, read from the hand pose
 #
 # These are not letters. They are held still so a letter in the middle of
 # being formed does not fire them.
 #   space     both hands open, fingers spread
 #   backspace one hand, index finger pointing to the left of the camera picture
-#   accept    one hand, thumbs up (keeps the word being spelled)
 import numpy as np
 
 HOLD_SECONDS = 0.55
@@ -37,21 +36,10 @@ def _fingers_open(hand):
     return all(_extended(hand, tip, joint) for tip, joint in _FINGERS)
 
 
-def _fingers_curled(hand):
-    return not any(_extended(hand, tip, joint) for tip, joint in _FINGERS)
-
-
 def _open_hand(hand):
     palm = _palm(hand)
     spread = _distance(hand, 8, 20)
     return _fingers_open(hand) and _thumb_extended(hand) and spread > palm * 0.7
-
-
-def _thumbs_up(hand):
-    palm = _palm(hand)
-    # Image y grows downward, so a raised thumb sits above the wrist.
-    raised = float(hand[4, 1]) < float(hand[0, 1]) - palm * 0.45
-    return _thumb_extended(hand) and _fingers_curled(hand) and raised
 
 
 def _point_left(hand):
@@ -64,13 +52,11 @@ def _point_left(hand):
 
 
 def detect_control(hands):
-    """Return 'space', 'backspace', 'accept', or None."""
+    """Return 'space', 'backspace', or None."""
     if not hands:
         return None
     if len(hands) >= 2 and _open_hand(hands[0]) and _open_hand(hands[1]):
         return 'space'
-    if len(hands) == 1 and _thumbs_up(hands[0]):
-        return 'accept'
     if len(hands) == 1 and _point_left(hands[0]):
         return 'backspace'
     return None

@@ -113,10 +113,6 @@ class ISLStateMachine:
             self.words.append(word)
         return True
 
-    def accept_word(self):
-        """Thumbs up: keep the word being spelled, not a suggestion."""
-        return self.space()
-
     def delete_character(self):
         """Backspace: drop the last letter, or the last word if none is open."""
         if self.letters:

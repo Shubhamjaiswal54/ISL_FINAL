@@ -93,7 +93,7 @@ python -m src.main                          # serve on :8000
 ### Using it live
 
 Press **Start** to open the camera, sign a letter, and hold it briefly until
-it appears. **Space** or a thumbs-up keeps the word you spelled. A misspelling
+it appears. **Space** keeps the word you spelled. A misspelling
 such as `hallo` offers `hello`, and that suggestion is used only if you tap it.
 **Backspace** removes the last
 letter. **Speak** turns the words into a sentence (Gemini when

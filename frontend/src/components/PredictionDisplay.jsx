@@ -13,7 +13,7 @@ export default function PredictionDisplay() {
   const thresholdPercent = Math.round(threshold * 100)
   const above = Boolean(prediction?.label) && (prediction.confidence || 0) >= threshold
   const control = prediction?.control
-  const controlLabel = control === 'backspace' ? 'Backspace' : control === 'accept' ? 'Accept' : 'Space'
+  const controlLabel = control === 'backspace' ? 'Backspace' : 'Space'
   const committed = currentWord && glosses[glosses.length - 1] === currentWord
     ? glosses.slice(0, -1)
     : glosses
@@ -64,7 +64,7 @@ export default function PredictionDisplay() {
             ? (above
               ? (prediction.settled ? 'Held. It will be added.' : 'Hold still so it can be added.')
               : `${percent}% is under ${thresholdPercent}%, so this letter stays out of the word.`)
-            : 'Thumbs up keeps the word you spelled. Tap a suggestion to use that word instead.'}
+            : 'Open both hands to end the word you spelled. Tap a suggestion to use that word instead.'}
         </p>
       </div>
 

@@ -126,8 +126,6 @@ class TranslationSession:
             self.state.space()
         elif name == 'backspace':
             self.state.delete_character()
-        elif name == 'accept':
-            self.state.accept_word()
 
     async def process(self, hands, now):
         """Returns the prediction message for one frame.

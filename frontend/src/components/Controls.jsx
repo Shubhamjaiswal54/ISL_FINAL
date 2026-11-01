@@ -9,11 +9,10 @@ export default function Controls() {
   return (
     <section className="rounded-3xl border border-white/10 bg-card p-5">
       <h2 className="text-lg font-semibold">Controls</h2>
-      <p className="mt-1 text-sm text-muted">The same three actions can be signed. Hold each one still for a moment.</p>
-      <div className="mt-4 grid gap-2 sm:grid-cols-3">
-        <SignHint title="Space" detail="Both hands open, fingers spread. Ends the word." />
+      <p className="mt-1 text-sm text-muted">Space and Backspace can be signed. Hold each one still for a moment.</p>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        <SignHint title="Space" detail="Both hands open, fingers spread. Ends the word you spelled." />
         <SignHint title="Backspace" detail="One hand, index finger pointing to the left edge of the picture." />
-        <SignHint title="Accept" detail="Thumbs up. Keeps the word you spelled. Tap a suggestion to use that instead." />
       </div>
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <button
