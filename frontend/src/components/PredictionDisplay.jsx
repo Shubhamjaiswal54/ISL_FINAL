@@ -12,6 +12,8 @@ export default function PredictionDisplay() {
   const percent = Math.round((prediction?.confidence || 0) * 100)
   const thresholdPercent = Math.round(threshold * 100)
   const above = Boolean(prediction?.label) && (prediction.confidence || 0) >= threshold
+  const control = prediction?.control
+  const controlLabel = control === 'backspace' ? 'Backspace' : control === 'accept' ? 'Accept' : 'Space'
   const committed = currentWord && glosses[glosses.length - 1] === currentWord
     ? glosses.slice(0, -1)
     : glosses
@@ -53,14 +55,16 @@ export default function PredictionDisplay() {
 
       <div className="mt-5 flex items-end justify-between gap-4">
         <p className="font-mono text-6xl leading-none tracking-tight">
-          {above ? prediction.label : '–'}
+          {control ? controlLabel : (above ? prediction.label : '–')}
         </p>
         <p className="max-w-[14rem] text-right text-sm text-muted">
-          {prediction?.label
+          {control
+            ? (prediction.controlFired ? `${controlLabel} signed.` : `Hold the ${controlLabel.toLowerCase()} sign a moment longer.`)
+            : prediction?.label
             ? (above
               ? (prediction.settled ? 'Held. It will be added.' : 'Hold still so it can be added.')
               : `${percent}% is under ${thresholdPercent}%, so this letter stays out of the word.`)
-            : 'Sign a letter, then press Space to finish the word.'}
+            : 'Sign a letter, then use Space or a thumbs-up to finish the word.'}
         </p>
       </div>
 

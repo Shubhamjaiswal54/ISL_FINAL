@@ -69,6 +69,8 @@ export default function LiveTranslate() {
         accepted: data.accepted,
         handCount: data.handCount,
         threshold: data.threshold,
+        control: data.control || null,
+        controlFired: Boolean(data.controlFired),
       })
     }
 

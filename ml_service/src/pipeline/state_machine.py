@@ -113,6 +113,14 @@ class ISLStateMachine:
             self.words.append(word)
         return True
 
+    def accept_word(self):
+        """Commit the highlighted suggestion for the word being spelled."""
+        from src.pipeline.spell_suggest import suggest_words
+        options = suggest_words(self.current_word)
+        if not self.letters or not options:
+            return False
+        return self.space(options[0])
+
     def delete_character(self):
         """Backspace: drop the last letter, or the last word if none is open."""
         if self.letters:

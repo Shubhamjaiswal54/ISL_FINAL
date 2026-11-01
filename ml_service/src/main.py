@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from src.config import (MODEL_PATH, LABELS_PATH, MAX_HANDS, SMOOTHING_FRAMES, CONFIDENCE_THRESHOLD,
                         DEBOUNCE_SECONDS, LOW_CONFIDENCE_SECONDS, GAP_RESET_SECONDS,
                         MOTION_SPEED_THRESHOLD, MOTION_EMA_ALPHA)
+from src.pipeline.control_signs import ControlLatch, detect_control
 from src.pipeline.spell_suggest import suggest_words
 from src.pipeline.skeleton_render import HandOrderStabilizer, canonical_points, render_hands
 from src.pipeline.state_machine import ISLStateMachine
@@ -105,6 +106,7 @@ class TranslationSession:
         self.motion = MotionGate(speed_threshold=MOTION_SPEED_THRESHOLD, ema_alpha=MOTION_EMA_ALPHA)
         self.order = HandOrderStabilizer()
         self.seen_hands = None
+        self.controls = ControlLatch()
         self.state = ISLStateMachine(
             confidence_threshold=CONFIDENCE_THRESHOLD,
             debounce_seconds=DEBOUNCE_SECONDS,
@@ -117,6 +119,15 @@ class TranslationSession:
         self.motion.reset()
         self.order.reset()
         self.seen_hands = None
+        self.controls.reset()
+
+    def _apply_control(self, name):
+        if name == 'space':
+            self.state.space()
+        elif name == 'backspace':
+            self.state.delete_character()
+        elif name == 'accept':
+            self.state.accept_word()
 
     async def process(self, hands, now):
         """Returns the prediction message for one frame.
@@ -129,6 +140,12 @@ class TranslationSession:
             self._clear_tracking()
             self.state.hand_absent(now)
             return self._message(None, 0.0, False, False, 0)
+
+        held, fired = self.controls.update(detect_control(hands), now)
+        if held:
+            if fired:
+                self._apply_control(self.controls.name)
+            return self._message(None, 1.0, False, True, len(hands), control=self.controls.name, control_fired=fired)
 
         # A one-hand frame and a two-hand frame of the same letter are
         # different pictures. Averaging them produces a third, wrong letter.
@@ -164,7 +181,7 @@ class TranslationSession:
             "threshold": CONFIDENCE_THRESHOLD,
         }
 
-    def _message(self, label, confidence, accepted, settled, hand_count):
+    def _message(self, label, confidence, accepted, settled, hand_count, control=None, control_fired=False):
         current = self.state.current_word
         return {
             "type": "prediction",
@@ -178,6 +195,8 @@ class TranslationSession:
             "suggestions": suggest_words(current),
             "glosses": self.state.get_sentence_glosses(),
             "threshold": CONFIDENCE_THRESHOLD,
+            "control": control,
+            "controlFired": control_fired,
         }
 
 

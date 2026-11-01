@@ -9,7 +9,12 @@ export default function Controls() {
   return (
     <section className="rounded-3xl border border-white/10 bg-card p-5">
       <h2 className="text-lg font-semibold">Controls</h2>
-      <p className="mt-1 text-sm text-muted">Space ends a word. Speak reads the sentence. Stop only turns the camera off.</p>
+      <p className="mt-1 text-sm text-muted">The same three actions can be signed. Hold each one still for a moment.</p>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <SignHint title="Space" detail="Both hands open, fingers spread. Ends the word." />
+        <SignHint title="Backspace" detail="One hand, index finger pointing to the left edge of the picture." />
+        <SignHint title="Accept" detail="Thumbs up. Takes the highlighted suggestion." />
+      </div>
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <button
           type="button"
@@ -58,5 +63,14 @@ export default function Controls() {
         </button>
       </div>
     </section>
+  )
+}
+
+function SignHint({ title, detail }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/30 px-3 py-3">
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted">{detail}</p>
+    </div>
   )
 }
