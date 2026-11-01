@@ -51,57 +51,55 @@ def _letters(raw):
     return ''.join(char for char in str(raw).lower() if char.isalpha())
 
 
+# Enough to scroll through, not the whole dictionary on a one-letter prefix.
+_MAX_SUGGESTIONS = 80
+
+
 @lru_cache(maxsize=2048)
 def suggest_words(raw):
-    """Up to three likely English words for a fingerspelled token.
+    """Autocomplete strip for the word being spelled.
 
-    A real dictionary word is left alone. Otherwise a one-letter misspelling
-    such as "hallo" suggests "hello", and a short prefix such as "hel"
-    suggests words that start that way.
+    Every dictionary word that starts with the spelling is included, most
+    common first, the way a phone keyboard lists completions. A misspelling
+    with no such words, such as "hallo", lists the nearest real words instead,
+    with the same-length correction ("hello") first.
     """
     word = _letters(raw)
-    if len(word) < 2 or any(char.isdigit() for char in str(raw)):
-        return []
-    if word in RANK:
+    if not word or any(char.isdigit() for char in str(raw)):
         return []
 
-    found = []
-    seen = set()
+    prefix_hits = [candidate for candidate in BY_FIRST.get(word[0], []) if candidate.startswith(word)]
+    prefix_hits.sort(key=lambda candidate: RANK[candidate])
+    # "hel" continues into help and hello. "hallo" only continues into halloween,
+    # which is the typo plus several extra letters, so that should not outrank hello.
+    close_prefixes = [candidate for candidate in prefix_hits if len(candidate) - len(word) <= 2]
 
-    def add(candidate):
-        if candidate in seen or candidate == word:
-            return
-        seen.add(candidate)
-        found.append(candidate)
-
-    def order(candidate):
-        # A wrong letter ("hallo" -> "hello") beats a shorter, more common word.
-        if len(candidate) == len(word):
-            group = 0
-        elif len(candidate) > len(word):
-            group = 1
-        else:
-            group = 2
-        return (group, RANK[candidate])
-
+    corrections = []
+    seen = set(prefix_hits)
     for candidate in BY_FIRST.get(word[0], []):
-        if abs(len(candidate) - len(word)) > 1:
+        if candidate in seen or abs(len(candidate) - len(word)) > 1:
             continue
         if _levenshtein(word, candidate, 1) <= 1:
-            add(candidate)
+            corrections.append(candidate)
+            seen.add(candidate)
+    corrections.sort(key=lambda candidate: (abs(len(candidate) - len(word)), RANK[candidate]))
 
-    for candidate in BY_FIRST.get(word[0], []):
-        if candidate.startswith(word) and 0 < len(candidate) - len(word) <= 2:
-            add(candidate)
-
-    if not found and len(word) >= 5:
+    if not close_prefixes and not corrections and len(word) >= 5:
         for length in range(len(word) - 2, len(word) + 3):
             for candidate in BY_LENGTH.get(length, []):
+                if candidate in seen:
+                    continue
                 if _levenshtein(word, candidate, 2) <= 2:
-                    add(candidate)
+                    corrections.append(candidate)
+                    seen.add(candidate)
+        corrections.sort(key=lambda candidate: (abs(len(candidate) - len(word)), RANK[candidate]))
 
-    found.sort(key=order)
-    return found[:3]
+    if word not in RANK and corrections and not close_prefixes:
+        ordered = corrections + prefix_hits
+    else:
+        # Once help and hello are on the strip, a shorter typo such as "he" is noise.
+        ordered = prefix_hits + [candidate for candidate in corrections if len(candidate) >= len(word)]
+    return ordered[:_MAX_SUGGESTIONS]
 
 
 def commit_spelling(raw):

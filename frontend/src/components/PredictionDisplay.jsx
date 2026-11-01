@@ -93,23 +93,32 @@ export default function PredictionDisplay() {
           ))}
       </div>
 
-      {suggestions.length > 0 && (
-        <div className="mt-4">
-          <h3 className="text-sm font-medium text-muted">Word predictions</h3>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {suggestions.map((word) => (
-              <button
-                key={word}
-                type="button"
-                onClick={() => sendControl('space', { word })}
-                className="rounded-full border border-secondary/40 bg-secondary/15 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-secondary/30"
-              >
-                {word}
-              </button>
-            ))}
-          </div>
+      <div className="mt-4">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium text-muted">Suggestions</h3>
+          <p className="text-xs text-muted">{currentWord ? `Spelling ${currentWord.toLowerCase()}` : 'Spell a word'}</p>
         </div>
-      )}
+        <div className="flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/40 p-2">
+          {suggestions.length === 0
+            ? <p className="px-3 py-3 text-sm text-muted">Matches show here as you spell, like a keyboard.</p>
+            : suggestions.map((word, index) => {
+              const typed = (currentWord || '').toLowerCase()
+              const head = word.startsWith(typed) ? word.slice(0, typed.length) : ''
+              const tail = word.slice(head.length)
+              return (
+                <button
+                  key={word}
+                  type="button"
+                  onClick={() => sendControl('space', { word })}
+                  className={`shrink-0 rounded-xl px-4 py-3 text-base transition-colors ${index === 0 ? 'bg-accent text-background' : 'bg-white/5 text-foreground hover:bg-white/10'}`}
+                >
+                  <span className="font-semibold">{head}</span>
+                  <span className={index === 0 ? '' : 'text-foreground/75'}>{tail || (head ? '' : word)}</span>
+                </button>
+              )
+            })}
+        </div>
+      </div>
 
       <div className="mt-6 border-t border-white/10 pt-5">
         <p className="text-xs uppercase tracking-wide text-muted">Sentence</p>
