@@ -91,10 +91,10 @@ class ISLStateMachine:
         return None
 
     def space(self, chosen=None):
-        """Commit the letters spelled so far as one word.
+        """Commit the letters spelled so far.
 
-        `chosen` is a suggestion the signer tapped. Otherwise the closest
-        English word is stored, so a spelling like HALLO is saved as hello.
+        The stored word is the spelling itself. `chosen` is used only when
+        the signer taps a suggestion.
         """
         from src.pipeline.spell_suggest import commit_spelling, suggest_words
         if not self.letters:
@@ -114,12 +114,8 @@ class ISLStateMachine:
         return True
 
     def accept_word(self):
-        """Commit the highlighted suggestion for the word being spelled."""
-        from src.pipeline.spell_suggest import suggest_words
-        options = suggest_words(self.current_word)
-        if not self.letters or not options:
-            return False
-        return self.space(options[0])
+        """Thumbs up: keep the word being spelled, not a suggestion."""
+        return self.space()
 
     def delete_character(self):
         """Backspace: drop the last letter, or the last word if none is open."""

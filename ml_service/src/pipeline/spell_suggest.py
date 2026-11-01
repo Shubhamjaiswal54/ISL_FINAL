@@ -103,14 +103,8 @@ def suggest_words(raw):
 
 
 def commit_spelling(raw):
-    """The word to store when Space is pressed."""
+    """The spelled letters, unchanged. A suggestion is used only if the signer taps it."""
     text = ''.join(str(raw).split())
     if any(char.isdigit() for char in text):
         return text.lower()
-    word = _letters(text)
-    if not word:
-        return ''
-    options = suggest_words(text)
-    if options:
-        return options[0]
-    return word
+    return _letters(text)

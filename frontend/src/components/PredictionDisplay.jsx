@@ -64,7 +64,7 @@ export default function PredictionDisplay() {
             ? (above
               ? (prediction.settled ? 'Held. It will be added.' : 'Hold still so it can be added.')
               : `${percent}% is under ${thresholdPercent}%, so this letter stays out of the word.`)
-            : 'Sign a letter, then use Space or a thumbs-up to finish the word.'}
+            : 'Thumbs up keeps the word you spelled. Tap a suggestion to use that word instead.'}
         </p>
       </div>
 
@@ -104,8 +104,8 @@ export default function PredictionDisplay() {
         </div>
         <div className="flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/40 p-2">
           {suggestions.length === 0
-            ? <p className="px-3 py-3 text-sm text-muted">Matches show here as you spell, like a keyboard.</p>
-            : suggestions.map((word, index) => {
+            ? <p className="px-3 py-3 text-sm text-muted">Tap a suggestion to use it. Otherwise the spelled word is kept.</p>
+            : suggestions.map((word) => {
               const typed = (currentWord || '').toLowerCase()
               const head = word.startsWith(typed) ? word.slice(0, typed.length) : ''
               const tail = word.slice(head.length)
@@ -114,10 +114,10 @@ export default function PredictionDisplay() {
                   key={word}
                   type="button"
                   onClick={() => sendControl('space', { word })}
-                  className={`shrink-0 rounded-xl px-4 py-3 text-base transition-colors ${index === 0 ? 'bg-accent text-background' : 'bg-white/5 text-foreground hover:bg-white/10'}`}
+                  className="shrink-0 rounded-xl bg-white/5 px-4 py-3 text-base text-foreground transition-colors hover:bg-white/10"
                 >
                   <span className="font-semibold">{head}</span>
-                  <span className={index === 0 ? '' : 'text-foreground/75'}>{tail || (head ? '' : word)}</span>
+                  <span className="text-foreground/75">{tail || (head ? '' : word)}</span>
                 </button>
               )
             })}

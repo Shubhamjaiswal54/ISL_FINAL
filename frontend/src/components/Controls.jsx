@@ -13,7 +13,7 @@ export default function Controls() {
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <SignHint title="Space" detail="Both hands open, fingers spread. Ends the word." />
         <SignHint title="Backspace" detail="One hand, index finger pointing to the left edge of the picture." />
-        <SignHint title="Accept" detail="Thumbs up. Takes the highlighted suggestion." />
+        <SignHint title="Accept" detail="Thumbs up. Keeps the word you spelled. Tap a suggestion to use that instead." />
       </div>
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <button

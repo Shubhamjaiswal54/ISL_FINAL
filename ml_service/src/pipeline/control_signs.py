@@ -4,7 +4,7 @@
 # being formed does not fire them.
 #   space     both hands open, fingers spread
 #   backspace one hand, index finger pointing to the left of the camera picture
-#   accept    one hand, thumbs up (takes the highlighted suggestion)
+#   accept    one hand, thumbs up (keeps the word being spelled)
 import numpy as np
 
 HOLD_SECONDS = 0.55

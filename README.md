@@ -93,8 +93,9 @@ python -m src.main                          # serve on :8000
 ### Using it live
 
 Press **Start** to open the camera, sign a letter, and hold it briefly until
-it appears. **Space** ends the word. A misspelling such as `hallo` offers
-`hello`, and Space uses the first suggestion. **Backspace** removes the last
+it appears. **Space** or a thumbs-up keeps the word you spelled. A misspelling
+such as `hallo` offers `hello`, and that suggestion is used only if you tap it.
+**Backspace** removes the last
 letter. **Speak** turns the words into a sentence (Gemini when
 `GOOGLE_API_KEY` is set in `ml_service/.env`) and reads it aloud. **Stop**
 turns the camera off and leaves the words on screen.
